@@ -24,10 +24,10 @@ static const int WC_LED_COUNT = 10;
 static const int STUBE_LED_START = 10;
 static const int STUBE_LED_COUNT = 10;
 
-// Topics
-static const char* TOP_STATUS      = "h/1/status";
-static const char* TOP_WC_STATE    = "h/1/wc/humidity/state";
-static const char* TOP_STUBE_STATE = "h/1/stube/light/state";
+// Topics (numeric-only scheme)
+static const char* TOP_STATUS    = "h2h/haus1/sys/status";       // 1/0 retained
+static const char* TOP_WC_HUMID  = "h2h/haus1/wc/humid";         // float (%)
+static const char* TOP_STUBE_ADC = "h2h/haus1/stube/light_adc";  // int (0..4095)
 
 // ---------- Globals ----------
 WiFiClient wifiClient;
@@ -55,22 +55,6 @@ void setOfflineVisual() {
   showAll();
 }
 
-void applyWcState(const char* s) {
-  if (strcmp(s, "wet") == 0) {
-    fillRange(WC_LED_START, WC_LED_COUNT, CRGB(0,0,255));     // blau
-  } else if (strcmp(s, "dry") == 0) {
-    fillRange(WC_LED_START, WC_LED_COUNT, CRGB(255,80,0));    // orange
-  }
-}
-
-void applyStubeState(const char* s) {
-  if (strcmp(s, "bright") == 0) {
-    fillRange(STUBE_LED_START, STUBE_LED_COUNT, CRGB(255,255,0)); // gelb
-  } else if (strcmp(s, "dark") == 0) {
-    fillRange(STUBE_LED_START, STUBE_LED_COUNT, CRGB::Black);     // aus
-  }
-}
-
 void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   // Payload in null-terminated string kopieren
   static char msg[64];
@@ -79,7 +63,7 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   msg[n] = 0;
 
   if (strcmp(topic, TOP_STATUS) == 0) {
-    sourceOnline = (strcmp(msg, "online") == 0);
+    sourceOnline = (atoi(msg) == 1);
     if (!sourceOnline) {
       setOfflineVisual();
     }
@@ -89,17 +73,28 @@ void mqtt_callback(char* topic, byte* payload, unsigned int length) {
   // Wenn Quelle offline ist, ignorieren wir States (optional)
   if (!sourceOnline) return;
 
-  if (strcmp(topic, TOP_WC_STATE) == 0) {
-    applyWcState(msg);
-    showAll();
-    return;
+  if (strcmp(topic, TOP_WC_HUMID) == 0) {
+  float rh = atof(msg);
+  if (rh >= 65.0f) {
+    fillRange(WC_LED_START, WC_LED_COUNT, CRGB(0,0,255));   // wet-ish -> blau
+  } else {
+    fillRange(WC_LED_START, WC_LED_COUNT, CRGB(255,80,0));  // dry-ish -> orange
   }
+  showAll();
+  return;
+}
 
-  if (strcmp(topic, TOP_STUBE_STATE) == 0) {
-    applyStubeState(msg);
-    showAll();
-    return;
+if (strcmp(topic, TOP_STUBE_ADC) == 0) {
+  int adc = atoi(msg);
+  if (adc >= 2000) {
+    fillRange(STUBE_LED_START, STUBE_LED_COUNT, CRGB(255,255,0)); // bright -> gelb
+  } else {
+    fillRange(STUBE_LED_START, STUBE_LED_COUNT, CRGB::Black);     // dark -> aus
   }
+  showAll();
+  return;
+}
+
 }
 
 void wifi_init() {
@@ -120,8 +115,8 @@ bool mqtt_connect() {
   if (ok) {
     // Alles von Haus1 holen (inkl retained)
     mqtt.subscribe(TOP_STATUS, 1);
-    mqtt.subscribe(TOP_WC_STATE, 1);
-    mqtt.subscribe(TOP_STUBE_STATE, 1);
+    mqtt.subscribe(TOP_WC_HUMID, 1);
+    mqtt.subscribe(TOP_STUBE_ADC, 1);
   }
   return ok;
 }
