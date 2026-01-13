@@ -23,30 +23,41 @@ static const int   LDR_BRIGHT_THRESHOLD = 2000;   // ADC 0..4095, anpassen!
 static const float RH_WET_THRESHOLD     = 65.0;   // falls du echte RH hast
 
 // Publish timing
-static const uint32_t PUBLISH_MIN_MS = 1000;      // min Zeit zwischen Publishes bei Änderungen
-static const uint32_t PUBLISH_HEARTBEAT_MS = 15000; // periodischer "online" refresh optional
+static const uint32_t PUBLISH_HEARTBEAT_MS = 15000; // periodischer "1" refresh optional
 static const uint32_t PUBLISH_NUMERIC_MS = 5000;  // RH/ADC alle X ms
 
 // ---------- MQTT topics ----------
-static const char* TOP_STATUS          = "h/1/status";
-static const char* TOP_WC_STATE        = "h/1/wc/humidity/state";
-static const char* TOP_WC_RH           = "h/1/wc/humidity/rh";
-static const char* TOP_STUBE_STATE     = "h/1/stube/light/state";
-static const char* TOP_STUBE_ADC       = "h/1/stube/light/adc";
+// ---------- Topic scheme (README) ----------
+static const char* HOUSE_ID   = "haus1";
+static const char* TOP_STATUS = "h2h/haus1/sys/status";   // 1=online, 0=offline (retain)
+
+// metrics:
+// h2h/haus1/wc/humid
+// h2h/haus1/stube/light_adc
+
+static void buildTopic(char* out, size_t outLen, const char* room, const char* metric) {
+  // h2h/<house_id>/<room>/<metric>
+  snprintf(out, outLen, "h2h/%s/%s/%s", HOUSE_ID, room, metric);
+}
+
+static void publishNumber(const char* room, const char* metric, float value, bool retain=false) {
+  char topic[128];
+  buildTopic(topic, sizeof(topic), room, metric);
+
+  char payload[32];
+  dtostrf(value, 0, 2, payload); // numeric only
+  mqtt.publish(topic, payload, retain);
+}
 
 // ---------- Globals ----------
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
 
-static uint32_t lastPublishMs = 0;
 static uint32_t lastHeartbeatMs = 0;
 static uint32_t lastNumericMs = 0;
 
 // Zustände (nur publish bei Änderung)
-static bool lastIsWet = false;
-static bool lastIsBright = false;
-static bool haveLastWet = false;
-static bool haveLastBright = false;
+
 
 // Dummy: ersetze das durch deinen echten Feuchtesensor (DHT/SHT/whatever)
 float readRelativeHumidityDummy() {
@@ -76,7 +87,7 @@ bool mqtt_connect() {
   // LWT: wenn Haus1 wegstirbt -> offline (retain=true)
   const bool willRetain = true;
   const uint8_t willQos = 1;
-  const char* willMsg = "offline";
+  const char* willMsg = "0";
 
   bool ok = mqtt.connect(
     CLIENT_ID,
@@ -90,7 +101,7 @@ bool mqtt_connect() {
 
   if (ok) {
     // Online setzen (retain=true), damit Haus2 sofort weiß was Sache ist
-    mqtt.publish(TOP_STATUS, "online", true);
+    mqtt.publish(TOP_STATUS, "1", true);
 
     // Optional: beim Connect gleich die letzten States nochmal raushauen (retain)
     // (machen wir sowieso in sensor_loop wenn haveLast* noch false ist)
@@ -110,11 +121,6 @@ void mqtt_ensure_connected() {
     wifi_init();
   }
   mqtt_connect();
-}
-
-void publish_state_if_needed(const char* topic, const char* payload) {
-  // QoS in PubSubClient ist begrenzt; retain ist hier der Hauptgewinn
-  mqtt.publish(topic, payload, true);
 }
 
 void sensors_loop() {
@@ -139,47 +145,26 @@ void sensors_loop() {
   const uint32_t now = millis();
 
   if (mqtt.connected()) {
-    if (wetAvailable) {
-      if (!haveLastWet || (isWet != lastIsWet)) {
-        if (now - lastPublishMs >= PUBLISH_MIN_MS) {
-          publish_state_if_needed(TOP_WC_STATE, isWet ? "wet" : "dry");
-          lastIsWet = isWet;
-          haveLastWet = true;
-          lastPublishMs = now;
-        }
-      }
-    }
+  const uint32_t now = millis();
 
-    if (!haveLastBright || (isBright != lastIsBright)) {
-      if (now - lastPublishMs >= PUBLISH_MIN_MS) {
-        publish_state_if_needed(TOP_STUBE_STATE, isBright ? "bright" : "dark");
-        lastIsBright = isBright;
-        haveLastBright = true;
-        lastPublishMs = now;
-      }
-    }
+  // Numeric values every X seconds (no sender-side heuristics)
+  if (now - lastNumericMs >= PUBLISH_NUMERIC_MS) {
+    lastNumericMs = now;
 
-    // Optional: numerische Werte alle X Sekunden (nicht retain nötig, aber ok)
-    if (now - lastNumericMs >= PUBLISH_NUMERIC_MS) {
-      lastNumericMs = now;
+    publishNumber("stube", "light_adc", (float)adc, false);
 
-      char buf[16];
-      snprintf(buf, sizeof(buf), "%d", adc);
-      mqtt.publish(TOP_STUBE_ADC, buf, false);
-
-      if (wetAvailable) {
-        dtostrf(rh, 0, 1, buf); // 1 Nachkommastelle
-        mqtt.publish(TOP_WC_RH, buf, false);
-      }
-    }
-
-    // Optional: heartbeat online refresh (retain)
-    if (now - lastHeartbeatMs >= PUBLISH_HEARTBEAT_MS) {
-      lastHeartbeatMs = now;
-      mqtt.publish(TOP_STATUS, "online", true);
+    if (rh >= 0.0f) {
+      publishNumber("wc", "humid", rh, false);
     }
   }
+
+  // Optional: status refresh (retain)
+  if (now - lastHeartbeatMs >= PUBLISH_HEARTBEAT_MS) {
+    lastHeartbeatMs = now;
+    mqtt.publish(TOP_STATUS, "1", true);
+  }
 }
+
 
 void setup() {
   // analogRead default ok; evtl analogSetPinAttenuation(PIN_LDR, ADC_11db);
