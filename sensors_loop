@@ -126,26 +126,19 @@ void mqtt_ensure_connected() {
 void sensors_loop() {
   // 1) LDR -> "bright/dark"
   int adc = readLdrAdc();
-  bool isBright = (adc >= LDR_BRIGHT_THRESHOLD);
 
   // 2) Feuchte -> "wet/dry" (Dummy oder echter RH)
   float rh = readRelativeHumidityDummy();
-  bool isWet;
-  bool wetAvailable = true;
 
   if (rh < 0.0f) {
     // Kein RH verfügbar -> hier könntest du z.B. nur LDR machen
-    wetAvailable = false;
-    isWet = false;
   } else {
-    isWet = (rh >= RH_WET_THRESHOLD);
   }
 
   // Publish bei Änderung (oder beim allerersten Mal)
   const uint32_t now = millis();
 
   if (mqtt.connected()) {
-  const uint32_t now = millis();
 
   // Numeric values every X seconds (no sender-side heuristics)
   if (now - lastNumericMs >= PUBLISH_NUMERIC_MS) {
